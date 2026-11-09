@@ -1,0 +1,16 @@
+.venv/
+
+OpenFace-3.0/
+
+data/
+logs/
+output/
+results/
+
+*.tsv
+*.mp4
+
+__pycache__/
+*.pyc
+.DS_Store
+
