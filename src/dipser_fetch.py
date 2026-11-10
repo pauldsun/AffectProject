@@ -85,20 +85,29 @@ def list_dir(conn, path, method=[None]):
     raise last
 
 
-def walk(conn, path):
-    """Yield (path, size) for every file under path. Folders this account may not open are skipped."""
-    try:
-        entries = list_dir(conn, path)
-    except ftplib.error_perm as e:
-        print(f"  skipped {path}: {e}")
-        return
+def walk(c, path):
+    """Yield (path, size) for every file under path. c = {"conn": ..., "tls": ...}; the connection is reopened
+    if the server drops it (ScienceDB hangs up after refusing a folder). Folders we may not open are skipped."""
+    for attempt in range(4):
+        try:
+            entries = list_dir(c["conn"], path)
+            break
+        except ftplib.error_perm as e:
+            print(f"  skipped {path}: {e}")
+            return
+        except (EOFError, OSError, ftplib.error_temp, ftplib.error_reply) as e:
+            if attempt == 3:
+                raise
+            print(f"  connection lost at {path} ({type(e).__name__}); reconnecting", flush=True)
+            time.sleep(2 * (attempt + 1))
+            c["conn"] = connect(c["tls"])
     if path.count("/") <= 2:
         print(f"  {path}: {', '.join(n + ('/' if d else '') for n, d, _ in entries[:12])}"
               f"{' ...' if len(entries) > 12 else ''}", flush=True)
     for name, is_dir, size in entries:
         p = f"{path.rstrip('/')}/{name}"
         if is_dir:
-            yield from walk(conn, p)
+            yield from walk(c, p)
         else:
             yield p, size
 
@@ -258,7 +267,7 @@ def cmd_list(a):
     except ftplib.Error:
         pass
     rows = []
-    for i, r in enumerate(walk(conn, root), 1):
+    for i, r in enumerate(walk({"conn": conn, "tls": a.tls}, root), 1):
         rows.append(r)
         if i % 500 == 0:
             print(f"  {i} files listed ...", flush=True)
