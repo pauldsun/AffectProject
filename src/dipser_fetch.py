@@ -86,8 +86,16 @@ def list_dir(conn, path, method=[None]):
 
 
 def walk(conn, path):
-    """Yield (path, size) for every file under path."""
-    for name, is_dir, size in list_dir(conn, path):
+    """Yield (path, size) for every file under path. Folders this account may not open are skipped."""
+    try:
+        entries = list_dir(conn, path)
+    except ftplib.error_perm as e:
+        print(f"  skipped {path}: {e}")
+        return
+    if path.count("/") <= 2:
+        print(f"  {path}: {', '.join(n + ('/' if d else '') for n, d, _ in entries[:12])}"
+              f"{' ...' if len(entries) > 12 else ''}", flush=True)
+    for name, is_dir, size in entries:
         p = f"{path.rstrip('/')}/{name}"
         if is_dir:
             yield from walk(conn, p)
@@ -153,6 +161,12 @@ def download(conn_fn, path, size, dst, tries=5):
                     f.write(chunk); bar.update(len(chunk))
                 conn.retrbinary(f"RETR {path}", write, blocksize=1 << 20, rest=have or None)
             conn.quit()
+        except ftplib.error_perm as e:
+            if have and "rest" in str(e).lower() or have and str(e).startswith(("500", "502", "504")):
+                print(f"  server refused to resume ({e}); restarting {Path(path).name} from the beginning")
+                dst.unlink()
+                continue
+            raise
         except (OSError, EOFError, ftplib.Error) as e:
             print(f"  connection dropped ({e}); resuming ({attempt + 1}/{tries})")
             time.sleep(5)
@@ -272,6 +286,16 @@ def cmd_labels(a):
     loose = [(p, s) for p, s in loose if re.search(LABEL_RE, p) and not p.lower().endswith(".zip")]
     zips = select(rows, a.include, a.exclude, ".zip")
     print(f"{len(zips)} zips to read labels from, {len(loose)} loose label files")
+    if zips:   # partial reads need REST; a zip's last 22 bytes are its end-of-archive record ("PK\x05\x06")
+        p, s = zips[0]
+        try:
+            r = FTPRange(lambda: connect(a.tls), p, s); r.seek(-22, 2); tail = r.read(22)
+        except ftplib.Error as e:
+            tail = str(e).encode()
+        if not tail.startswith(b"PK\x05\x06"):
+            sys.exit(f"the server does not support partial reads (got {tail[:40]!r}), so labels can't be read without "
+                     "downloading whole zips; use the fetch command on a few zips instead")
+        print("partial reads work")
     for p, s in loose:
         dst = out / p.strip("/")
         if not dst.exists():
