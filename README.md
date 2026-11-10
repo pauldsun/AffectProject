@@ -12,7 +12,9 @@ Using OpenFace3.0 for feature extraction, Perspective-n-Point (PnP) for 2D to 3D
 - `src/extract_features.py` - offline extraction over videos/folders → one CSV (+ .npz of landmarks and 1280-d backbone embeddings) per clip, resumable
 - `src/audit_continuity.py` - checks whether consecutive DAiSEE clips are back-to-back footage; label change rates
 - `src/sample_clips.py` - copies a small reproducible subset of raw clips (full subjects + consecutive runs) for viewing
-- `src/daisee.py` - DAiSEE folder layout + label loading helpers
+- `src/daisee.py` - DAiSEE folder layout + label loading helpers (clip-id parser: subject + session + clip number)
+- `src/dipser_fetch.py` - DIPSER over FTP without storing the 668 GB: list, labels-only, download -> mp4 -> delete
+- `colab.ipynb` (DAiSEE) and `dipser_colab.ipynb` (DIPSER) - thin Colab launchers for the scripts above
 - `src/live_demo.py` - webcam overlay of the same features; `--record` logs them to CSV
 - `src/visualize_frame.py` - draw a `openface detect` CSV over its image
 - `scripts/` - setup helpers (weight download, macOS patch)
@@ -86,6 +88,13 @@ of the setup above (OpenFace install, weights, patch).
 - 2026-11-09: DAiSEE unpacked on Colab: 9,068 clips (8,232 .avi + 836 .mp4), 8,925 label rows (143 clips unlabeled).
   1 clip has a bad CRC in the official zip (Train/210055/2100552061), set aside by the notebook. Dataset README:
   clip-number holes come from data cleaning (removed clips), so id gaps likely mean missing time.
+- 2026-11-10: Full DAiSEE audit: within a session, consecutive clip numbers are back-to-back. But labels carry no
+  temporal signal: next-clip label change (Boredom 57%) = random clip of the same subject (59%), no drift within
+  sessions. Forecasting is impossible on DAiSEE. Clip ids are subject + session + clip number in several
+  spellings (parser in daisee.py).
+- 2026-11-10: Switching to DIPSER/DIPSEER (in-person classroom, per-student cameras, attention 1-5 + 9 emotions as
+  change points). 668 GB of PNG over FTP, so added `dipser_fetch.py` + `dipser_colab.ipynb`. Tested end-to-end
+  on a local FTP server with a fake DIPSER-shaped dataset; not yet run on the real server.
 
 ## Citations:
 ```bibtex
