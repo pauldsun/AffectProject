@@ -79,8 +79,10 @@ def scan(path):
 
 
 def scan_subject(pool, clips, cache):
-    if cache.exists():
-        return pickle.loads(cache.read_bytes())
+    if cache.exists():   # caches from before the id parser are in a different clip order: re-align by path
+        by_path = {m["path"]: (m, t) for m, t in pickle.loads(cache.read_bytes())}
+        if all(p in by_path for p in clips.path):
+            return [by_path[p] for p in clips.path]
     res = list(pool.imap(scan, clips.path.tolist()))
     cache.write_bytes(pickle.dumps(res))
     return res
@@ -169,7 +171,9 @@ def main():
                 pair_rows.append(dict(
                     subject=s, split_a=ca.split, split_b=cb.split, clip_a=ca.clip_id, clip_b=cb.clip_id,
                     path_a=ca.path, path_b=cb.path,
-                    id_step=(int(cb.clip_id) - int(ca.clip_id)) if ca.clip_id.isdigit() and cb.clip_id.isdigit() else None,
+                    same_session=ca.session == cb.session,
+                    id_step=int(cb.clip_num - ca.clip_num) if ca.session == cb.session and pd.notna(ca.clip_num)
+                    and pd.notna(cb.clip_num) else None,              # clip-number step inside one session
                     d_next=d_next,                                         # A last vs B first
                     d_rev=dist(tb["last"], ta["first"]),                   # B last vs A first: small = order reversed
                     d_rand=np.median([dist(ta["last"], t["first"]) for t in rng.sample(others, min(3, len(others)))])
@@ -215,8 +219,10 @@ def summarize(clips, pairs, has_labels):
     L.append(f"median distance: 1 frame {pairs.d_1frame.median():.3f} | boundary {pairs.d_next.median():.3f} | "
              f"reversed order {pairs.d_rev.median():.3f} | random same-subject clip {pairs.d_rand.median():.3f}")
     L.append(f"pairs where reversed order fits better than forward: {(pairs.d_rev < pairs.d_next).mean():.0%}")
+    L.append(f"pairs across a session change: {(~pairs.same_session).sum()} "
+             f"({pairs.loc[~pairs.same_session, 'verdict'].eq('continuous').mean():.0%} continuous)")
     if pairs.id_step.notna().any():
-        L.append("clip-id step between neighbours: " + ", ".join(
+        L.append("clip-number step within a session: " + ", ".join(
             f"{int(k)} ({v})" for k, v in pairs.id_step.value_counts().head(6).items()))
         L.append("continuous rate by id step: " + ", ".join(
             f"{int(k)}: {g.eq('continuous').mean():.0%}" for k, g in pairs.groupby("id_step").verdict

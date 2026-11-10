@@ -26,7 +26,7 @@ Using OpenFace3.0 for feature extraction, Perspective-n-Point (PnP) for 2D to 3D
 curl -LsSf https://astral.sh/uv/install.sh | sh #restart terminal after
 
 ## 1. Get the code
-git clone https://github.com/pauldsun/affect-detection.git AffectProject
+git clone https://github.com/pauldsun/AffectProject.git AffectProject
 cd AffectProject
 git clone https://github.com/CMU-MultiComp-Lab/OpenFace-3.0.git
 
@@ -83,6 +83,9 @@ of the setup above (OpenFace install, weights, patch).
   classified correctly) and raw-clip sampler. Next: download DAiSEE in Colab, run the audit before extraction.
 - 2026-11-09: Added `colab.ipynb` (session A on CPU: download + audit + samples; session B on GPU: extraction).
   Colab parts untested so far (Colab was down).
+- 2026-11-09: DAiSEE unpacked on Colab: 9,068 clips (8,232 .avi + 836 .mp4), 8,925 label rows (143 clips unlabeled).
+  1 clip has a bad CRC in the official zip (Train/210055/2100552061), set aside by the notebook. Dataset README:
+  clip-number holes come from data cleaning (removed clips), so id gaps likely mean missing time.
 
 ## Citations:
 ```bibtex
