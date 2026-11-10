@@ -4,7 +4,7 @@ DIPSER_HOST, DIPSER_PORT, DIPSER_USER, DIPSER_PASS, so they never appear in comm
 
   python src/dipser_fetch.py list   --out OUT                       # manifest.csv of every remote file + size summary
   python src/dipser_fetch.py labels --out OUT [--include RE]        # label + watch files read out of each remote zip
-  python src/dipser_fetch.py fetch  --out OUT --work /content/w --include RE [--exclude RE] [--limit N] [--dry-run]
+  python src/dipser_fetch.py fetch  --out OUT --work /content/w --include RE [--exclude context_cam] [--limit N] [--dry-run]
 
 fetch, per zip: download (resumable) to --work -> every folder of frames becomes <folder>.mp4 (H.264, --crf 18,
 visually lossless) + <folder>.frames.csv (original frame file names and times: the cameras run at "about 10 fps",
@@ -33,30 +33,66 @@ def connect(tls=False):
     return conn
 
 
-def walk(conn, path="/"):
-    """Yield (path, size) for every file under path. MLSD if the server has it, else NLST + SIZE."""
-    try:
-        entries = list(conn.mlsd(path, facts=["type", "size"]))
-    except ftplib.error_perm:
-        entries = None
-    if entries is not None:
-        for name, facts in entries:
-            if name in (".", ".."):
-                continue
-            p = f"{path.rstrip('/')}/{name}"
-            if facts.get("type") == "dir":
-                yield from walk(conn, p)
-            elif facts.get("type") == "file":
-                yield p, int(facts.get("size", -1))
-        return
-    for p in conn.nlst(path):
-        p = p if p.startswith("/") else f"{path.rstrip('/')}/{p}"
-        if p.rstrip("/").split("/")[-1] in (".", ".."):
-            continue
+def parse_list_line(line):
+    """One LIST line -> (name, is_dir, size) for Unix-style or Windows/IIS-style listings; None if unparseable."""
+    parts = line.split(None, 8)
+    if len(parts) == 9 and parts[0][:1] in "d-l":            # drwxr-xr-x 1 owner group size Mon DD HH:MM name
+        if parts[0][0] == "l":
+            return None
+        return parts[8], parts[0][0] == "d", int(parts[4]) if parts[4].isdigit() else -1
+    parts = line.split(None, 3)
+    if len(parts) == 4 and re.match(r"\d\d-\d\d-\d\d", parts[0]):   # 01-31-25  10:32AM  <DIR>  name
+        return parts[3], parts[2] == "<DIR>", -1 if parts[2] == "<DIR>" else int(parts[2])
+    return None
+
+
+def list_dir(conn, path, method=[None]):
+    """[(name, is_dir, size)] for one folder. Tries MLSD, then LIST, then NLST + SIZE; remembers what worked."""
+    tries = [method[0]] if method[0] else ["mlsd", "list", "nlst"]
+    for m in tries:
         try:
-            yield p, conn.size(p)
-        except ftplib.error_perm:          # no size -> a directory
+            if m == "mlsd":
+                out = [(n, f.get("type") == "dir", int(f.get("size", -1))) for n, f in conn.mlsd(path, facts=["type", "size"])
+                       if f.get("type") in ("dir", "file")]
+            elif m == "list":
+                conn.cwd(path)
+                lines = []
+                conn.retrlines("LIST", lines.append)
+                out = [e for e in map(parse_list_line, lines) if e]
+                if lines and not out:
+                    print("  unrecognised LIST format, e.g.:", lines[:3])
+                    continue
+            else:
+                conn.cwd(path)
+                names = [n.rstrip("/").split("/")[-1] for n in conn.nlst()]
+                conn.voidcmd("TYPE I")             # listing switched to text mode; SIZE needs binary
+                out = []
+                for n in names:
+                    try:                           # a folder if we can enter it
+                        conn.cwd(f"{path.rstrip('/')}/{n}")
+                        out.append((n, True, -1))
+                    except ftplib.error_perm:
+                        try:
+                            out.append((n, False, conn.size(f"{path.rstrip('/')}/{n}")))
+                        except ftplib.error_perm:
+                            out.append((n, False, -1))
+            if method[0] is None:
+                print(f"  (listing with {m.upper()})")
+            method[0] = m
+            return [e for e in out if e[0] not in (".", "..")]
+        except ftplib.error_perm as e:
+            last = e
+    raise last
+
+
+def walk(conn, path):
+    """Yield (path, size) for every file under path."""
+    for name, is_dir, size in list_dir(conn, path):
+        p = f"{path.rstrip('/')}/{name}"
+        if is_dir:
             yield from walk(conn, p)
+        else:
+            yield p, size
 
 
 class FTPRange(io.RawIOBase):
@@ -201,8 +237,14 @@ def select(rows, include, exclude, ext=None):
 
 def cmd_list(a):
     conn = connect(a.tls)
+    root = a.root or conn.pwd()
+    print("server:", conn.getwelcome().splitlines()[0][:120], "| login folder:", conn.pwd(), "| listing from:", root)
+    try:
+        print("server features:", " ".join(l.strip() for l in conn.sendcmd("FEAT").splitlines()[1:-1]))
+    except ftplib.Error:
+        pass
     rows = []
-    for i, r in enumerate(walk(conn, a.root), 1):
+    for i, r in enumerate(walk(conn, root), 1):
         rows.append(r)
         if i % 500 == 0:
             print(f"  {i} files listed ...", flush=True)
@@ -284,7 +326,7 @@ def main():
     ap.add_argument("command", choices=["list", "labels", "fetch"])
     ap.add_argument("--out", required=True, help="output folder (on Drive)")
     ap.add_argument("--tls", action="store_true", help="use FTP over TLS (if the plain login is refused)")
-    ap.add_argument("--root", default="/", help="list: remote folder to start from")
+    ap.add_argument("--root", help="list: remote folder to start from (default: the login folder)")
     ap.add_argument("--depth", type=int, default=2, help="list: folder depth for the size summary")
     ap.add_argument("--include", help="regex on the remote path, e.g. 'group1/' or 'experiment(1|3)/'")
     ap.add_argument("--exclude", help="regex on the remote path, e.g. 'general_cam'")
