@@ -69,6 +69,24 @@ def forecast_targets(b, H):
     return (c[t + H + 1] - c[t + 1]) > 0
 
 
+def change_times(v):
+    """Seconds where a rater's value changes (both sides known) and the sign of the change."""
+    ok = ~np.isnan(v)
+    i = np.flatnonzero(ok[1:] & ok[:-1] & (v[1:] != v[:-1])) + 1
+    return i, np.sign(v[i] - v[i - 1])
+
+
+def nearest_within(t1, t2, W):
+    """For each time in t1: index of the nearest time in sorted t2 if within W s, else -1."""
+    if len(t2) == 0 or len(t1) == 0:
+        return np.full(len(t1), -1)
+    j = np.searchsorted(t2, t1)
+    cand = np.stack([np.clip(j - 1, 0, len(t2) - 1), np.clip(j, 0, len(t2) - 1)], 1)
+    d = np.abs(t2[cand] - t1[:, None])
+    best = cand[np.arange(len(t1)), d.argmin(1)]
+    return np.where(d.min(1) <= W, best, -1)
+
+
 def pct(x):
     return f"{100 * x:.1f}%"
 
@@ -79,6 +97,9 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--k", type=int, default=2, help="bored = at least k experts say emotion 1")
     ap.add_argument("--horizon", type=int, default=30, help="forecast horizon in seconds")
+    ap.add_argument("--target", default="experts",
+                    help="what 'bored' means in sections 5-6: 'experts' (>= k of them) or one rater, e.g. self, e3")
+    ap.add_argument("--sync-window", type=int, default=2, help="section 7: changes this many s apart count as together")
     ap.add_argument("--drop", default="", help="experts to leave out of the consensus, e.g. e1,e2")
     a = ap.parse_args()
     out = Path(a.out); out.mkdir(parents=True, exist_ok=True)
@@ -169,13 +190,23 @@ def main():
               f"kappa self vs expert consensus {cohen(s.astype(int), maj.astype(int)):.3f}")
 
     # ---------------------------------------------------------------- 5
-    print(f"\n== 5. boredom (bored = at least {K} of the {nE} experts present say emotion 1)")
+    if a.target == "experts":
+        what = f"at least {K} of the {nE} experts present say emotion 1"
+        bored_of = lambda r: (r[E].values == 1).sum(1) >= K
+    else:
+        what = f"rater '{a.target}' says emotion 1"
+        bored_of = lambda r: r[f"emo_{a.target}"].values == 1
+        if f"emo_{a.target}" not in tl:
+            sys.exit(f"no rater {a.target}; raters are {raters}")
+    print(f"\n== 5. boredom (bored = {what})")
     nb_all = (tl[E].values == 1).sum(1)
     print("share of time with >= k experts saying bored:",
           {k: pct((nb_all >= k).mean()) for k in range(1, nE + 1)})
     rows = []
     for (g, e, s), r in recs:
-        b = (r[E].values == 1).sum(1) >= K
+        if a.target != "experts" and r[f"emo_{a.target}"].isna().all():
+            continue                     # this rater did not label this recording
+        b = bored_of(r)
         y = forecast_targets(b, H)
         att = r[A].mean(1).values
         rows.append(dict(group=g, experiment=e, subject=s, minutes=len(r) / 60, bored=b.mean(),
@@ -208,15 +239,18 @@ def main():
           f" of {rec.groupby(['group', 'subject']).ngroups}")
 
     # ---------------------------------------------------------------- 6
-    print("\n== 6. temporal signal: mean |change| of the expert consensus")
+    print("\n== 6. temporal signal: mean |change| of a label series")
     print("lag L = same recording, L s later. Compare with a random time in the SAME recording, the same student "
           "in another experiment, and another student in the same session (same activity).")
     print("If lag-L ~ 'same recording', there is nothing to forecast beyond the recording's average (DAiSEE).")
     rng = np.random.default_rng(0)
-    for name, fn in (("bored share (experts saying 1 / experts present)",
+    series = [(f"target: bored 0/1 ({what})", lambda r: bored_of(r).astype(float))] if a.target != "experts" else []
+    if a.target not in ("experts",) and f"att_{a.target}" in tl:
+        series.append((f"attention of rater {a.target}", lambda r: r[f"att_{a.target}"].values))
+    for name, fn in series + [("bored share (experts saying 1 / experts present)",
                       lambda r: (r[E].values == 1).sum(1) / np.maximum(r[E].notna().sum(1).values, 1)),
-                     ("attention (expert mean)", lambda r: r[A].mean(1).values)):
-        x = {k: fn(r) for k, r in recs}
+                     ("attention (expert mean)", lambda r: r[A].mean(1).values)]:
+        x = {k: v for k, v in ((k, fn(r)) for k, r in recs) if not np.isnan(v).all()}
         res = {}
         for L in (1, 5, 10, 30, 60):
             res[f"lag {L}s"] = np.nanmean(np.concatenate([np.abs(v[L:] - v[:-L]) for v in x.values() if len(v) > L]))
@@ -236,6 +270,67 @@ def main():
         res["same student, other experiment"] = np.nanmean(np.concatenate(stud)) if stud else np.nan
         res["other student, same session"] = np.nanmean(np.concatenate(sess)) if sess else np.nan
         print(f"{name}:"); print("  " + "\n  ".join(f"{k:32s} {v:.3f}" for k, v in res.items()))
+
+    # ---------------------------------------------------------------- 7
+    W = a.sync_window
+    print(f"\n== 7. do raters change their labels at the SAME moments? (within +-{W} s)")
+    print("hit = a change by rater A has a change by rater B within the window. 'shifted' = the same with B's changes "
+          "moved by a random offset (circularly, 10 times), i.e. what chance gives with B's change rate.")
+    print("lift = observed / shifted: ~1 = no shared timing; clearly > 1 = they react to the same moments.")
+    print("same direction = of the matched ATTENTION changes, share going the same way (up/up, down/down).")
+    from collections import defaultdict
+    # per key: changes, hits, hits_shifted, att_matched, att_same, att_matched_shifted, att_same_shifted
+    acc = defaultdict(lambda: np.zeros(7))
+    for k, r in recs:
+        T = len(r)
+        ch = {}
+        for rt in raters:
+            if r[f"emo_{rt}"].isna().all():
+                continue
+            te, _ = change_times(r[f"emo_{rt}"].values)
+            ta, sa = change_times(r[f"att_{rt}"].values)
+            ch[rt] = {"emotion": te, "attention": ta, "any": np.union1d(te, ta), "sign": sa}
+        for r1 in ch:
+            for r2 in ch:
+                if r1 == r2:
+                    continue
+                for f in ("emotion", "attention", "any"):
+                    t1, t2 = ch[r1][f], ch[r2][f]
+                    if not len(t1):
+                        continue
+                    row = np.zeros(7)
+                    m = nearest_within(t1, t2, W)
+                    row[:2] = len(t1), (m >= 0).sum()
+                    if f == "attention":
+                        row[3] = (m >= 0).sum()
+                        row[4] = (ch[r1]["sign"][m >= 0] == ch[r2]["sign"][m[m >= 0]]).sum()
+                    for _ in range(10):                       # chance level: B's changes at shifted times
+                        sh = (t2 + rng.integers(20, max(T - 20, 21))) % T
+                        order = np.argsort(sh)
+                        ms = nearest_within(t1, sh[order], W)
+                        row[2] += (ms >= 0).sum() / 10
+                        if f == "attention":
+                            row[5] += (ms >= 0).sum() / 10
+                            row[6] += (ch[r1]["sign"][ms >= 0] == ch[r2]["sign"][order][ms[ms >= 0]]).sum() / 10
+                    kind = "self-expert" if "self" in (r1, r2) else "expert-expert"
+                    acc[(kind, f)] += row
+                    acc[(r1, r2, f)] += row
+    for kind in ("expert-expert", "self-expert"):
+        for f in ("emotion", "attention", "any"):
+            n, h, hs, *_ = acc[(kind, f)]
+            if n:
+                print(f"  {kind:14s} {f:9s}: hit {pct(h / n)} vs shifted {pct(hs / n)}, lift {h / max(hs, 1e-9):.2f}")
+        _, _, _, am, sm, ams, sms = acc[(kind, "attention")]
+        if am and ams:
+            print(f"  {kind:14s} matched attention changes going the same direction: {pct(sm / am)} "
+                  f"(shifted: {pct(sms / ams)})")
+    lift = pd.DataFrame(np.nan, raters, raters)
+    for r1 in raters:
+        for r2 in raters:
+            n, h, hs, *_ = acc[(r1, r2, "any")]
+            if n:
+                lift.loc[r1, r2] = h / max(hs, 1e-9)
+    print("lift per pair, any change (row = A, column = B):"); print(lift.round(2).to_string())
 
     tl.to_csv(out / "timeline.csv.gz", index=False)
     print(f"\nwrote {out}/timeline.csv.gz ({len(tl)} rows), recordings.csv, experiments.csv")

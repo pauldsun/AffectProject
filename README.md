@@ -101,6 +101,11 @@ of the setup above (OpenFace install, weights, patch).
   all 483 student recordings (481 with 4 experts + self, 2 missing one), ~5 min per experiment, watch data 1 file/s
   (48 recordings without). First look: experts disagree strongly. Added `dipser.py` (loader -> per-second
   timelines) and `dipser_labels.py` (agreement, boredom onsets per experiment, temporal signal).
+- 2026-11-10: Label audit on all 483 recordings: 5 experts (e1-e3 everywhere, e4 or e5 as the 4th). Experts agree
+  at chance level (Fleiss kappa ~0 for emotion, attention and bored yes/no; pairwise 0.0-0.2; self vs experts 0.14),
+  and each has a habitual code (e1 says boredom 78% of the time, e2 pride 72%). The activity ranking is consistent
+  though (lecture and news reading most boring, robotics least, for experts and self). Expert consensus at 30 s is
+  ~90% of the way to a random time in the recording. Next: self-report as the target, change-timing check.
 
 ## Citations:
 ```bibtex
