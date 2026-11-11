@@ -100,6 +100,7 @@ def main():
     ap.add_argument("--target", default="experts",
                     help="what 'bored' means in sections 5-6: 'experts' (>= k of them) or one rater, e.g. self, e3")
     ap.add_argument("--sync-window", type=int, default=2, help="section 7: changes this many s apart count as together")
+    ap.add_argument("--other-students", type=int, default=3, help="section 7b: other students compared per recording")
     ap.add_argument("--drop", default="", help="experts to leave out of the consensus, e.g. e1,e2")
     a = ap.parse_args()
     out = Path(a.out); out.mkdir(parents=True, exist_ok=True)
@@ -279,42 +280,54 @@ def main():
     print("lift = observed / shifted: ~1 = no shared timing; clearly > 1 = they react to the same moments.")
     print("same direction = of the matched ATTENTION changes, share going the same way (up/up, down/down).")
     from collections import defaultdict
-    # per key: changes, hits, hits_shifted, att_matched, att_same, att_matched_shifted, att_same_shifted
-    acc = defaultdict(lambda: np.zeros(7))
+    # change times as whole clock seconds, so recordings of different students in a session line up
+    CH, SPAN = {}, {}
     for k, r in recs:
-        T = len(r)
-        ch = {}
+        clk = np.round(r["clock"].values).astype(int)
+        SPAN[k] = (clk[0], len(clk))
+        CH[k] = {}
         for rt in raters:
             if r[f"emo_{rt}"].isna().all():
                 continue
             te, _ = change_times(r[f"emo_{rt}"].values)
             ta, sa = change_times(r[f"att_{rt}"].values)
-            ch[rt] = {"emotion": te, "attention": ta, "any": np.union1d(te, ta), "sign": sa}
-        for r1 in ch:
-            for r2 in ch:
-                if r1 == r2:
-                    continue
-                for f in ("emotion", "attention", "any"):
-                    t1, t2 = ch[r1][f], ch[r2][f]
-                    if not len(t1):
-                        continue
-                    row = np.zeros(7)
-                    m = nearest_within(t1, t2, W)
-                    row[:2] = len(t1), (m >= 0).sum()
-                    if f == "attention":
-                        row[3] = (m >= 0).sum()
-                        row[4] = (ch[r1]["sign"][m >= 0] == ch[r2]["sign"][m[m >= 0]]).sum()
-                    for _ in range(10):                       # chance level: B's changes at shifted times
-                        sh = (t2 + rng.integers(20, max(T - 20, 21))) % T
-                        order = np.argsort(sh)
-                        ms = nearest_within(t1, sh[order], W)
-                        row[2] += (ms >= 0).sum() / 10
-                        if f == "attention":
-                            row[5] += (ms >= 0).sum() / 10
-                            row[6] += (ch[r1]["sign"][ms >= 0] == ch[r2]["sign"][order][ms[ms >= 0]]).sum() / 10
+            CH[k][rt] = {"emotion": clk[te], "attention": clk[ta], "any": np.union1d(clk[te], clk[ta]), "sign": sa}
+
+    def compare(c1, c2, span, fields, reps):
+        """counts for changes c1 (rater A) against c2 (rater B): see `acc` below."""
+        c0, T = span
+        rows = {}
+        for f in fields:
+            t1, t2 = c1[f], c2[f]
+            row = np.zeros(7)
+            if not len(t1):
+                rows[f] = row; continue
+            m = nearest_within(t1, t2, W)
+            row[:2] = len(t1), (m >= 0).sum()
+            if f == "attention":
+                row[3] = (m >= 0).sum()
+                row[4] = (c1["sign"][m >= 0] == c2["sign"][m[m >= 0]]).sum()
+            for _ in range(reps):                       # chance level: B's changes at shifted times
+                sh = c0 + (t2 - c0 + rng.integers(20, max(T - 20, 21))) % T
+                order = np.argsort(sh)
+                ms = nearest_within(t1, sh[order], W)
+                row[2] += (ms >= 0).sum() / reps
+                if f == "attention":
+                    row[5] += (ms >= 0).sum() / reps
+                    row[6] += (c1["sign"][ms >= 0] == c2["sign"][order][ms[ms >= 0]]).sum() / reps
+            rows[f] = row
+        return rows
+
+    # acc[key] = changes, hits, hits_shifted, att_matched, att_same, att_matched_shifted, att_same_shifted
+    acc = defaultdict(lambda: np.zeros(7))
+    for k in CH:
+        for r1 in CH[k]:
+            for r2 in CH[k]:
+                if r1 != r2:
                     kind = "self-expert" if "self" in (r1, r2) else "expert-expert"
-                    acc[(kind, f)] += row
-                    acc[(r1, r2, f)] += row
+                    for f, row in compare(CH[k][r1], CH[k][r2], SPAN[k], ("emotion", "attention", "any"), 10).items():
+                        acc[(kind, f)] += row
+                        acc[(r1, r2, f)] += row
     for kind in ("expert-expert", "self-expert"):
         for f in ("emotion", "attention", "any"):
             n, h, hs, *_ = acc[(kind, f)]
@@ -331,6 +344,50 @@ def main():
             if n:
                 lift.loc[r1, r2] = h / max(hs, 1e-9)
     print("lift per pair, any change (row = A, column = B):"); print(lift.round(2).to_string())
+
+    # 7b: the same, but rater B labels a DIFFERENT student of the same session, at the same clock time
+    NO = a.other_students
+    print(f"\n== 7b. same test against {NO} OTHER students of the same session (same clock time)")
+    print("If these lifts are as high as above, raters react to class-wide moments (teacher, activity changes), "
+          "not to the student. If ~1, the shared timing is about the individual student.")
+    print("rows: who is compared; columns: lift for emotion / attention / any change, then same direction for attention")
+    by_session = defaultdict(list)
+    for k in CH:
+        by_session[k[:2]].append(k)
+    acc2 = defaultdict(lambda: np.zeros(7))
+    for k in CH:
+        others = [o for o in by_session[k[:2]] if o != k]
+        for o in rng.permutation(len(others))[:NO]:
+            ko = others[o]
+            for r1 in CH[k]:
+                for r2 in CH[ko]:
+                    if r1 == "self" and r2 == "self":
+                        kind = "self X vs self Y"
+                    elif "self" in (r1, r2):
+                        kind = "self vs expert, X vs Y"
+                    elif r1 == r2:
+                        kind = "same expert, X vs Y"
+                    else:
+                        kind = "expert A on X vs B on Y"
+                    span = (min(SPAN[k][0], SPAN[ko][0]), max(SPAN[k][1], SPAN[ko][1]))
+                    for f, row in compare(CH[k][r1], CH[ko][r2], span, ("emotion", "attention", "any"), 5).items():
+                        acc2[(kind, f)] += row
+    lines = []
+    for label, src, kind in (("same student, expert A vs B", acc, "expert-expert"),
+                             ("same student, self vs expert", acc, "self-expert"),
+                             ("other student, expert A vs B", acc2, "expert A on X vs B on Y"),
+                             ("other student, same expert", acc2, "same expert, X vs Y"),
+                             ("other student, self vs expert", acc2, "self vs expert, X vs Y"),
+                             ("other student, self vs self", acc2, "self X vs self Y")):
+        vals = []
+        for f in ("emotion", "attention", "any"):
+            n, h, hs, *_ = src[(kind, f)]
+            vals.append(f"{h / hs:5.2f}" if n and hs else "  nan")
+        _, _, _, am, sm, ams, sms = src[(kind, "attention")]
+        d = f"{pct(sm / am)} (shifted {pct(sms / ams)})" if am and ams else "-"
+        lines.append(f"  {label:32s} {'  '.join(vals)}   {d}")
+    print(f"  {'':32s} {'emo':>5s}  {'att':>5s}  {'any':>5s}   same direction (attention)")
+    print("\n".join(lines))
 
     tl.to_csv(out / "timeline.csv.gz", index=False)
     print(f"\nwrote {out}/timeline.csv.gz ({len(tl)} rows), recordings.csv, experiments.csv")
