@@ -1,9 +1,10 @@
 """DIPSER/DIPSEER labels: change-point JSONs -> per-second timelines.
 
 Layout (as saved by dipser_fetch.py labels): .../group_GG/experiment_EE/subject_SS/labels/<rater>.json, raters
-labeler_01..04 (experts) + self_labeling. Each file is a list of {"datetime": "HH:MM:SS:ffffff", "attention"?,
+labeler_01..05 (experts, 4 per recording) + self_labeling. Each file is a list of {"datetime": "HH:MM:SS:ffffff", "attention"?,
 "emotion"?}; a field missing from an entry means it did not change. Values hold until the next entry that has them.
-Emotion codes 1..9 (1 = boredom, 9 = enjoyment); attention 1..5.
+Codes (paper, Pekrun et al.): emotion 9 enjoyment, 8 hope, 7 pride, 6 relief, 5 anger, 4 anxiety, 3 shame,
+2 despair, 1 boredom; attention 1..5, 5 = maximum. Up to 5 expert files (labeler_01..05) exist, 4 per recording.
 
 Our own loader instead of the official one: that one forward-fills across subjects and drops same-time tags.
 """
@@ -12,6 +13,8 @@ from pathlib import Path
 import numpy as np, pandas as pd
 
 FIELDS = ("attention", "emotion")
+EMOTIONS = {9: "enjoyment", 8: "hope", 7: "pride", 6: "relief", 5: "anger", 4: "anxiety", 3: "shame",
+            2: "despair", 1: "boredom"}
 BOREDOM = 1
 REC_RE = re.compile(r"group_(\d+)/experiment_(\d+)/subject_(\d+)")
 

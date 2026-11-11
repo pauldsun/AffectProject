@@ -27,6 +27,25 @@ def fleiss(M):
     return (p_i.mean() - pe) / (1 - pe) if pe < 1 else np.nan
 
 
+def fixed_n(V, n):
+    """Rows of V (items x raters, NaN = rater absent) that have exactly n values -> items x n array.
+    Fleiss' kappa needs the same NUMBER of raters per item, not the same raters."""
+    keep = (~np.isnan(V)).sum(1) == n
+    W = V[keep]
+    return W[~np.isnan(W)].reshape(-1, n)
+
+
+def pairwise(tl, raters, fn):
+    """fn(a, b) over the seconds where both raters have a value; NaN if they never overlap."""
+    out = pd.DataFrame(np.nan, raters, raters)
+    for r1 in raters:
+        for r2 in raters:
+            m = tl[r1].notna() & tl[r2].notna()
+            if m.sum() > 100:
+                out.loc[r1, r2] = fn(tl.loc[m, r1].values, tl.loc[m, r2].values)
+    return out
+
+
 def cohen(a, b):
     pe = sum((a == c).mean() * (b == c).mean() for c in np.union1d(a, b))
     return ((a == b).mean() - pe) / (1 - pe) if pe < 1 else np.nan
@@ -60,6 +79,7 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--k", type=int, default=2, help="bored = at least k experts say emotion 1")
     ap.add_argument("--horizon", type=int, default=30, help="forecast horizon in seconds")
+    ap.add_argument("--drop", default="", help="experts to leave out of the consensus, e.g. e1,e2")
     a = ap.parse_args()
     out = Path(a.out); out.mkdir(parents=True, exist_ok=True)
     K, H = a.k, a.horizon
@@ -68,7 +88,8 @@ def main():
     tl = dipser.timelines(ev)
     watch = dipser.watch_files(a.root)
     raters = sorted(ev.rater.unique(), key=lambda r: (r == "self", r))
-    experts = [r for r in raters if r != "self"]
+    dropped = [x for x in a.drop.split(",") if x]
+    experts = [r for r in raters if r != "self" and r not in dropped]
     E = [f"emo_{r}" for r in experts]; A = [f"att_{r}" for r in experts]
     keys = ["group", "experiment", "subject"]
     recs = list(tl.groupby(keys, sort=True))
@@ -79,9 +100,9 @@ def main():
     print(f"{len(ev)} label entries, {n_rec} recordings, raters {raters}")
     print("recordings per group:", ev.drop_duplicates(keys).groupby("group").size().to_dict())
     have = ev.groupby(keys).rater.agg(set)
-    missing = have[have.map(len) < len(raters)]
-    for k, s in missing.items():
-        print(f"  missing rater(s) {sorted(set(raters) - s)} in group {k[0]} experiment {k[1]} subject {k[2]}")
+    sets = have.map(lambda s: ",".join(r for r in raters if r in s)).rename("raters")
+    print("which raters label which recordings (rows = rater set, columns = group):")
+    print(sets.reset_index().groupby(["raters", "group"]).size().unstack(fill_value=0).to_string())
     dur = tl.groupby(keys).size() / 60
     print(f"recording length (first label -> last label in the session): min {dur.min():.1f}, "
           f"median {dur.median():.1f}, max {dur.max():.1f} min")
@@ -104,6 +125,11 @@ def main():
     print(per.groupby("rater").agg(median_entries=("entries", "median"),
                                    changes_per_min=("changes_per_min", "median"),
                                    recs_under_3_changes=("entries", lambda x: pct((x - 1 < 3).mean()))))
+    first = ev.sort_values(["t", "order"]).groupby(keys + ["rater"]).first()
+    print("value each rater gives at the START of a recording (share of recordings; a constant = tool default?):")
+    for f in ("emotion", "attention"):
+        tab = first.groupby("rater")[f].value_counts(normalize=True).unstack(fill_value=0)
+        print(f"{f}:"); print((100 * tab).round(0).to_string())
     for f in ("emotion", "attention"):
         x = ev.dropna(subset=[f]).groupby(keys + ["rater"])[f].nunique()
         print(f"recordings where the rater used only ONE {f} value:",
@@ -114,36 +140,39 @@ def main():
     for f, lo, hi in (("emo", 1, 9), ("att", 1, 5)):
         cols = [f"{f}_{r}" for r in raters]
         tab = pd.DataFrame({c[4:]: tl[c].value_counts(normalize=True) for c in cols}).reindex(range(lo, hi + 1))
-        print(f"{'emotion (1 = boredom, 9 = enjoyment)' if f == 'emo' else 'attention'}:")
+        print("emotion (" + ", ".join(f"{k} {v}" for k, v in dipser.EMOTIONS.items()) + ")" if f == "emo"
+              else "attention (5 = most attentive)")
         print((100 * tab.fillna(0)).round(1).to_string())
 
     # ---------------------------------------------------------------- 4
     print("\n== 4. agreement (per second, pooled over recordings)")
-    ok = tl[E + A].notna().all(1)
-    M = tl.loc[ok]
-    print(f"Fleiss kappa, {len(experts)} experts: emotion {fleiss(M[E].values):.3f}, attention "
-          f"{fleiss(M[A].values):.3f}, bored yes/no {fleiss((M[E].values == 1).astype(int)):.3f}")
+    nE = int(pd.Series(tl[E].notna().sum(1)).mode()[0])   # experts per recording (4)
+    print(f"experts in the consensus: {experts}{' (dropped ' + ','.join(dropped) + ')' if dropped else ''}; "
+          f"{nE} of them per recording")
+    VE, VA = tl[E].values, tl[A].values
+    print(f"Fleiss kappa over the {nE} experts of each second: emotion {fleiss(fixed_n(VE, nE)):.3f}, attention "
+          f"{fleiss(fixed_n(VA, nE)):.3f}, bored yes/no {fleiss((fixed_n(VE, nE) == 1).astype(int)):.3f}")
     print("(kappa < 0.2 slight, 0.2-0.4 fair, 0.4-0.6 moderate, > 0.6 substantial)")
-    allc = tl[[f"emo_{r}" for r in raters] + [f"att_{r}" for r in raters]].dropna()
-    for name, fn in (("emotion exact", lambda r: allc[f"emo_{r}"].values),
-                     ("bored yes/no", lambda r: (allc[f"emo_{r}"].values == 1).astype(int)),
-                     ("attention exact", lambda r: allc[f"att_{r}"].values)):
-        mat = pd.DataFrame([[cohen(fn(r1), fn(r2)) for r2 in raters] for r1 in raters], raters, raters)
-        print(f"pairwise Cohen kappa, {name}:"); print(mat.round(2).to_string())
-    w1 = pd.DataFrame([[(abs(allc[f"att_{r1}"] - allc[f"att_{r2}"]) <= 1).mean() for r2 in raters]
-                       for r1 in raters], raters, raters)
-    print("attention within 1 point:"); print((100 * w1).round(0).to_string())
-    maj = (M[E].values == 1).sum(1) >= K
-    if "emo_self" in M:
-        s = M["emo_self"].values == 1
+    emo = tl[[f"emo_{r}" for r in raters]].set_axis(raters, axis=1)
+    att = tl[[f"att_{r}" for r in raters]].set_axis(raters, axis=1)
+    bor = (emo == 1).astype(float).where(emo.notna())
+    for name, df, fn in (("emotion exact", emo, cohen), ("bored yes/no", bor, cohen),
+                         ("attention exact", att, cohen),
+                         ("attention within 1 point (% of seconds)", att, lambda x, y: 100 * np.mean(abs(x - y) <= 1))):
+        print(f"pairwise {name if '%' in name else 'Cohen kappa, ' + name}:")
+        print(pairwise(df, raters, fn).round(2).to_string())
+    nb = (VE == 1).sum(1)
+    if "emo_self" in tl:
+        m = tl["emo_self"].notna().values & (tl[E].notna().sum(1).values == nE)
+        s, maj = tl["emo_self"].values[m] == 1, nb[m] >= K
         print(f"self says bored {pct(s.mean())} of the time, >= {K} experts {pct(maj.mean())}; "
               f"kappa self vs expert consensus {cohen(s.astype(int), maj.astype(int)):.3f}")
 
     # ---------------------------------------------------------------- 5
-    print(f"\n== 5. boredom (bored = at least {K} of {len(experts)} experts say emotion 1)")
+    print(f"\n== 5. boredom (bored = at least {K} of the {nE} experts present say emotion 1)")
     nb_all = (tl[E].values == 1).sum(1)
     print("share of time with >= k experts saying bored:",
-          {k: pct((nb_all >= k).mean()) for k in range(1, len(experts) + 1)})
+          {k: pct((nb_all >= k).mean()) for k in range(1, nE + 1)})
     rows = []
     for (g, e, s), r in recs:
         b = (r[E].values == 1).sum(1) >= K
@@ -184,7 +213,8 @@ def main():
           "in another experiment, and another student in the same session (same activity).")
     print("If lag-L ~ 'same recording', there is nothing to forecast beyond the recording's average (DAiSEE).")
     rng = np.random.default_rng(0)
-    for name, fn in (("bored share (experts saying 1 / n)", lambda r: (r[E].values == 1).mean(1)),
+    for name, fn in (("bored share (experts saying 1 / experts present)",
+                      lambda r: (r[E].values == 1).sum(1) / np.maximum(r[E].notna().sum(1).values, 1)),
                      ("attention (expert mean)", lambda r: r[A].mean(1).values)):
         x = {k: fn(r) for k, r in recs}
         res = {}
