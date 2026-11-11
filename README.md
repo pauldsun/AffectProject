@@ -14,6 +14,8 @@ Using OpenFace3.0 for feature extraction, Perspective-n-Point (PnP) for 2D to 3D
 - `src/sample_clips.py` - copies a small reproducible subset of raw clips (full subjects + consecutive runs) for viewing
 - `src/daisee.py` - DAiSEE folder layout + label loading helpers (clip-id parser: subject + session + clip number)
 - `src/dipser_fetch.py` - DIPSER over FTP without storing the 668 GB: list, labels-only, download -> mp4 -> delete
+- `src/dipser.py` - DIPSER label loader (change points -> per-second timeline per rater);
+  `src/dipser_labels.py` - label analysis (agreement, boredom onsets per experiment, temporal signal)
 - `colab.ipynb` (DAiSEE) and `dipser_colab.ipynb` (DIPSER) - thin Colab launchers for the scripts above
 - `src/live_demo.py` - webcam overlay of the same features; `--record` logs them to CSV
 - `src/visualize_frame.py` - draw a `openface detect` CSV over its image
@@ -95,6 +97,10 @@ of the setup above (OpenFace install, weights, patch).
 - 2026-11-10: Switching to DIPSER/DIPSEER (in-person classroom, per-student cameras, attention 1-5 + 9 emotions as
   change points). 668 GB of PNG over FTP, so added `dipser_fetch.py` + `dipser_colab.ipynb`. Tested end-to-end
   on a local FTP server with a fake DIPSER-shaped dataset; not yet run on the real server.
+- 2026-11-10: Real server: 618 zips / 717.6 GB. Labels-only stage worked (server allows partial reads): labels for
+  all 483 student recordings (481 with 4 experts + self, 2 missing one), ~5 min per experiment, watch data 1 file/s
+  (48 recordings without). First look: experts disagree strongly. Added `dipser.py` (loader -> per-second
+  timelines) and `dipser_labels.py` (agreement, boredom onsets per experiment, temporal signal).
 
 ## Citations:
 ```bibtex
