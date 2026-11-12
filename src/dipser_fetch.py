@@ -154,8 +154,9 @@ class FTPRange(io.RawIOBase):
         return bytes(buf)
 
 
-def download(conn_fn, path, size, dst, tries=5):
-    """Resumable binary download with a progress line (MB/s)."""
+def download(conn_fn, path, size, dst, tries=12):
+    """Resumable binary download with a progress line (MB/s). Waits longer after each failure (10 s doubling,
+    capped at 5 min; ~40 min in total) because the server sometimes refuses new connections for a while."""
     from tqdm import tqdm
     dst.parent.mkdir(parents=True, exist_ok=True)
     for attempt in range(tries):
@@ -177,8 +178,9 @@ def download(conn_fn, path, size, dst, tries=5):
                 continue
             raise
         except (OSError, EOFError, ftplib.Error) as e:
-            print(f"  connection dropped ({e}); resuming ({attempt + 1}/{tries})")
-            time.sleep(5)
+            wait = min(300, 10 * 2 ** attempt)
+            print(f"  connection dropped ({e}); retry {attempt + 1}/{tries} in {wait} s")
+            time.sleep(wait)
     if not dst.exists() or dst.stat().st_size != size:
         raise RuntimeError(f"download of {path} incomplete")
 

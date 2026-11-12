@@ -106,6 +106,11 @@ of the setup above (OpenFace install, weights, patch).
   and each has a habitual code (e1 says boredom 78% of the time, e2 pride 72%). The activity ranking is consistent
   though (lecture and news reading most boring, robotics least, for experts and self). Expert consensus at 30 s is
   ~90% of the way to a random time in the recording. Next: self-report as the target, change-timing check.
+- 2026-11-10: Target = student self-report of boredom (30% of the time, 465 clean onsets in 266 recordings, 55/57
+  students; at 10 s ahead the label is < half way to random, at 30 s ~80%). Raters change labels at the same moments
+  for the same student (lift 1.5-2.1 over shifted timing) but not across students of the same session (lift ~1.1,
+  direction 50%): the shared timing is about the individual student, not class-wide events. Next: fetch
+  experiment 3 (lecture) student cameras, test download speed with one zip.
 
 ## Citations:
 ```bibtex
