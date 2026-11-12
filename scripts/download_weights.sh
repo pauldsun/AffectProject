@@ -14,7 +14,7 @@ for f in Alignment_RetinaFace.pth Landmark_98.pkl Landmark_68.pkl MTL_backbone.p
 done
 
 # verify byte-exact sizes
-check() { s=$(stat -f%z "$DEST/$1" 2>/dev/null); [ "$s" = "$2" ] && echo "OK   $1" || { echo "BAD  $1"; exit 1; }; }
+check() { s=$(wc -c < "$DEST/$1" 2>/dev/null | tr -d ' ');[ "$s" = "$2" ] && echo "OK   $1" || { echo "BAD  $1"; exit 1; }; }
 check Alignment_RetinaFace.pth 1789735
 check MTL_backbone.pth         101710914
 check Landmark_98.pkl          178030153
