@@ -179,7 +179,9 @@ class FeatureExtractor:
         if len(dets) == 0:
             return FrameResult(f, None, None)
 
-        det = dets[0]                                          # highest score (NMS output is sorted)
+        # The LARGEST face, not the highest score: a desk/robot camera sees its own user nearest, but classmates
+        # behind can score higher (DIPSER lecture: ~10% of frames were on the wrong person with dets[0]).
+        det = dets[np.argmax((dets[:, 2] - dets[:, 0]) * (dets[:, 3] - dets[:, 1]))]
         x1, y1, x2, y2 = np.clip(det[:4], 0, [w, h, w, h]).astype(int)
         face = frame[y1:y2, x1:x2]
         if face.size == 0:

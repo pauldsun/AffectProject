@@ -36,6 +36,12 @@ def _num(v):
     return float(v) if v not in (None, "") else np.nan
 
 
+def label_rows(entries, rater, **ids):
+    """One label file's entries (parsed JSON list) -> event dicts."""
+    return [dict(**ids, rater=rater, order=i, t=clock(x["datetime"]), attention=_num(x.get("attention")),
+                 emotion=_num(x.get("emotion"))) for i, x in enumerate(entries)]
+
+
 def load_events(root):
     """All label entries: group, experiment, subject, rater, order, t (s since midnight), attention, emotion."""
     rows = []
@@ -44,11 +50,24 @@ def load_events(root):
         if not m:
             continue
         g, e, s = map(int, m.groups())
-        for i, x in enumerate(json.load(open(f))):
-            rows.append(dict(group=g, experiment=e, subject=s, rater=rater_name(f.stem), order=i,
-                             t=clock(x["datetime"]), attention=_num(x.get("attention")),
-                             emotion=_num(x.get("emotion"))))
+        rows += label_rows(json.load(open(f)), rater_name(f.stem), group=g, experiment=e, subject=s)
     return pd.DataFrame(rows)
+
+
+def values_at(rec, times):
+    """Label values in force at each time (s since midnight) for one recording's events:
+    {"att_<rater>": array, "emo_<rater>": array}, NaN before a rater's first value for that field."""
+    times = np.asarray(times, dtype=float)
+    out = {}
+    for r, rr in rec.groupby("rater"):
+        for f in FIELDS:
+            x = rr.dropna(subset=[f]).sort_values(["t", "order"], kind="stable")
+            v = np.full(len(times), np.nan)
+            if len(x):
+                i = np.searchsorted(x.t.values, times, side="right") - 1   # last entry at or before t
+                v[i >= 0] = x[f].values[i[i >= 0]]
+            out[f"{f[:3]}_{r}"] = v
+    return out
 
 
 def watch_files(root):
@@ -77,13 +96,7 @@ def timelines(ev, ends=None, step=1.0):
         t1 = max(ends.get((g, e), rec.t.max()), rec.t.max())
         grid = t0 + np.arange(0, t1 - t0 + 1e-9, step)
         df = pd.DataFrame({"group": g, "experiment": e, "subject": s, "t": grid - t0, "clock": grid})
-        for r, rr in rec.groupby("rater"):
-            for f in FIELDS:
-                x = rr.dropna(subset=[f]).sort_values(["t", "order"], kind="stable")
-                v = np.full(len(grid), np.nan)
-                if len(x):
-                    i = np.searchsorted(x.t.values, grid, side="right") - 1   # last entry at or before t
-                    v[i >= 0] = x[f].values[i[i >= 0]]
-                df[f"{f[:3]}_{r}"] = v
+        for c, v in values_at(rec, grid).items():
+            df[c] = v
         out.append(df)
     return pd.concat(out, ignore_index=True)

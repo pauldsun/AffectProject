@@ -15,7 +15,12 @@ Using OpenFace3.0 for feature extraction, Perspective-n-Point (PnP) for 2D to 3D
 - `src/daisee.py` - DAiSEE folder layout + label loading helpers (clip-id parser: subject + session + clip number)
 - `src/dipser_fetch.py` - DIPSER over FTP without storing the 668 GB: list, labels-only, download -> mp4 -> delete
 - `src/dipser.py` - DIPSER label loader (change points -> per-second timeline per rater);
-  `src/dipser_labels.py` - label analysis (agreement, boredom onsets per experiment, temporal signal)
+  `src/dipser_labels.py` - label analysis (agreement, boredom onsets per experiment, temporal signal);
+  `src/dipser_align.py` - per frame: our features + the dataset's own face metadata + labels, on the frame clock;
+  `src/overlay_features.py` - draws saved features + labels back onto a recording (annotated mp4) for checking;
+  `src/dipser_pose_check.py` - validates our PnP head pose: same PnP on the dataset's MediaPipe mesh vs ours;
+  `src/dipser_dataset.py` - aligned frames -> one row per student-second: features, causal per-student z-scores,
+  bored-now and onset-within-H targets (+ per-second embeddings)
 - `colab.ipynb` (DAiSEE) and `dipser_colab.ipynb` (DIPSER) - thin Colab launchers for the scripts above
 - `src/live_demo.py` - webcam overlay of the same features; `--record` logs them to CSV
 - `src/visualize_frame.py` - draw a `openface detect` CSV over its image
@@ -111,6 +116,17 @@ of the setup above (OpenFace install, weights, patch).
   for the same student (lift 1.5-2.1 over shifted timing) but not across students of the same session (lift ~1.1,
   direction 50%): the shared timing is about the individual student, not class-wide events. Next: fetch
   experiment 3 (lecture) student cameras, test download speed with one zip.
+- 2026-11-12: Experiment 3 fetched on the Mac (54 student recordings, 58 GB at ~7 MB/s -> 3.3 GB kept). Frames are
+  irregular: ~10 fps between frames but ~50 gaps > 0.5 s per 5 min (up to 5 s), 7.7 fps on average, so timing comes
+  from frames.csv, never the mp4. Each frame ships with the dataset's own face analysis (box, head pose, 7 emotions,
+  MediaPipe face mesh + body pose). Self-report covers 100% of frames, bored 52% of the lecture. Extraction running
+  on an RTX 3090 (17.8 frames/s, ~2 h for all 54). Added `dipser_align.py`.
+- 2026-11-13: Head-pose check (`dipser_pose_check.py`): same PnP on the dataset's MediaPipe mesh tracks ours
+  (median r 0.82/0.93/0.94 pitch/yaw/roll); the dataset's provided pitch/yaw are swapped with flipped signs.
+  Found a bug: desk cameras see classmates behind (>1 face in 55% of frames) and the extractor took the
+  highest-scoring face, which was a classmate in ~10% of lecture frames (25 of 54 recordings, up to 62%).
+  `features.py` now takes the largest face (wrong-face frames 206/378 -> 1/378 on the worst recordings).
+  **Re-extract everything made before this fix.**
 
 ## Citations:
 ```bibtex

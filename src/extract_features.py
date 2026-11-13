@@ -16,7 +16,8 @@ def find_videos(inputs):
     """Yield (video_path, output_stem) pairs; directory inputs keep their subfolder layout."""
     for inp in map(Path, inputs):
         if inp.is_dir():
-            for v in sorted(p for p in inp.rglob("*") if p.suffix.lower() in VIDEO_EXTS):
+            for v in sorted(p for p in inp.rglob("*")         # skip macOS ._ metadata files
+                            if p.suffix.lower() in VIDEO_EXTS and not p.name.startswith("._")):
                 yield v, v.relative_to(inp).with_suffix("")
         else:
             yield inp, Path(inp.stem)
